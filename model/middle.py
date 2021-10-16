@@ -13,7 +13,7 @@ from torch.nn.utils.rnn import pack_padded_sequence, pad_packed_sequence
 
 from model.gcn_base import GraphConvolution, GraphAttention
 
-
+# after encoder, use this class to continute processing
 class WeightFusion(nn.Module):
     def __init__(self, opt):
         super(WeightFusion, self).__init__()
@@ -81,4 +81,5 @@ class WeightFusion(nn.Module):
         res_text = torch.stack(res_text)
         res_img = torch.stack(res_img)
 
+        # concat all features and binary classify
         return res_text, res_img, res_c

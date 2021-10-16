@@ -13,6 +13,7 @@ from pytorchcv.model_provider import get_model as ptcv_get_model
 from torch.nn.utils.rnn import pack_padded_sequence, pad_packed_sequence
 
 
+# the input data is first processed by the below class
 class DoubleEmbed(nn.Module):
     def __init__(self, opt):
         super(DoubleEmbed, self).__init__()

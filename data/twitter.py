@@ -79,6 +79,7 @@ def summary(root='./dataset/new'):
     plt.close()
 
 
+# preprocess data
 def preprocess(root='./dataset/new'):
     cont = Contractions('./repo/GoogleNews-vectors-negative300.bin.gz')
     # data = glob.glob(os.path.join(root, 'true', '*')) + glob.glob(os.path.join(root, 'fake', '*'))
@@ -199,7 +200,7 @@ def getAttitude(root='./dataset/new'):
             np.savez(t.replace('_body.json', '_attitude.npz'), sid=polarity_scores, blob={
                      'polarity': blob_pattern.polarity, 'subjectivity': blob_pattern.subjectivity})
 
-
+# construct user comment graph
 def construct_aj_matrix(root='./dataset/new'):
     fake_data = glob.glob(os.path.join(root, 'fake', '*')) + \
         glob.glob(os.path.join(root, 'true', '*'))
@@ -225,7 +226,7 @@ def construct_aj_matrix(root='./dataset/new'):
         np.savez(os.path.join(item, 'comment_graph.npz'),
                  graph=graph, ids=comment_ids)
 
-
+# normalize user comment graph
 def normalize_aj_matrix(root='./dataset/new'):
     fake_data = glob.glob(os.path.join(root, 'fake', '*')) + \
         glob.glob(os.path.join(root, 'true', '*'))
@@ -337,6 +338,7 @@ def get_tf_idf_vector(root='./dataset/new'):
         np.save(body, x.todense())
 
 
+# set image transform for training. may first generate image features instead of end2end
 def get_img_transform(opt, mode):
     normalize = transforms.Normalize(
         mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
@@ -374,17 +376,6 @@ def get_img(item_id, path=False):
             return Image.open(item_id.replace('_body.json', '.jpg')).convert('RGB')
         if os.path.exists(item_id.replace('_body.json', '.png')):
             return Image.open(item_id.replace('_body.json', '.png')).convert('RGB')
-
-
-def normalize_adj(mx):
-    """Row-normalize sparse matrix"""
-    mx = sp.csr_matrix(mx)
-    rowsum = np.array(mx.sum(1))
-    r_inv_sqrt = np.power(rowsum, -0.5).flatten()
-    r_inv_sqrt[np.isinf(r_inv_sqrt)] = 0.
-    r_mat_inv_sqrt = sp.diags(r_inv_sqrt)
-
-    return np.array(mx.dot(r_mat_inv_sqrt).transpose().dot(r_mat_inv_sqrt).tocoo().todense())
 
 
 def print_test_faux_samples(root='./dataset/new'):
@@ -475,3 +466,91 @@ class TwitterFauxBusterLoader(Dataset):
             self.data = [self.data[x] for x in indices[k]]
 
         return self
+
+
+# load text, image and user comment graph
+class TwitterDoubleLoader(Dataset):
+    def __init__(self, opt, mode='train'):
+        self.opt = opt
+        self.mode = mode
+
+        data = sorted(glob.glob(os.path.join(opt.twitter_root, 'true', '*', '*_body.json'))) + \
+            sorted(glob.glob(os.path.join(opt.twitter_root, 'fake', '*', '*_body.json')))
+
+        train, test = train_test_split(data, test_size=0.2, random_state=42)
+        train, val = train_test_split(train, test_size=0.2, random_state=42)
+        word_counter = self.build_counter(train)
+        self.word2idx, self.idx2word = self.build_vocab(
+            word_counter, self.opt.max_vocab)
+
+        if mode == 'test':
+            self.data = test
+            pdb.set_trace()
+        elif mode == 'val':
+            self.data = val
+        else:
+            self.data = train
+
+        self.trans = get_img_transform(opt, mode)
+        self.fake_label = ['00', '10', '01', '11']
+
+    def __getitem__(self, idx):
+        with open(self.data[idx]) as f:
+            item = json.load(f)
+            item = self.vectorize(item['token'])
+
+        img = get_img(self.data[idx])
+        img = self.trans(img)
+        graph = np.load(os.path.join('/'.join(self.data[idx].split('/')[:-1]), 'comment_graph.npz'), allow_pickle=True)
+        graph, ids, ngraph = graph['graph'], list(graph['ids']), graph['ngraph']
+
+        commentp = [os.path.join('/'.join(self.data[idx].split('/')[:-1]), 'comments', x+'_body.json') for x in ids]
+
+        idxs = []
+        for c in commentp:
+            with open(c) as f:
+                com = json.load(f)
+                idxs.append(self.vectorize(com['token']))
+
+        return idxs, item, 1 if '/fake/' in self.data[idx] else 0, img, self.data[idx], self.fake_label.index(self.data[idx].split('/')[-2].split('_')[-1][1:]) if '/fake/' in self.data[idx] else -1, ngraph
+
+    def __len__(self):
+        return len(self.data)
+
+    def vectorize(self, tokens):
+        """Convert tweet to vector
+        """
+        vec = [self.word2idx.get(token, 1) for token in tokens]
+        return vec
+
+    def build_counter(self, data):
+        words_counter = Counter()
+        for itemp in data:
+            with open(itemp) as f:
+                item = json.load(f)
+            words_counter.update(w for w in item['token'])
+
+        for itemp in data:
+            commentp = glob.glob(os.path.join(
+                '/'.join(itemp.split('/')[:-1]), 'comments', '*_body.json'))
+            assert len(commentp) != 0
+            for comment in commentp:
+                with open(comment) as f:
+                    item = json.load(f)
+                words_counter.update(w for w in item['token'])
+
+        return words_counter
+
+    def build_vocab(self, words_counter, max_vocab_size):
+        """Add pad and unk tokens and build word2idx and idx2word dictionaries
+        """
+        if self.opt.pretrain == 'sad':
+            item = np.load('./repo/sad_word.npz', allow_pickle=True)
+            word2idx, idx2word = item['word2idx'].item(), item['idx2word'].item()
+        else:
+            word2idx = {'<PAD>': 0, '<UNK>': 1}
+            word2idx.update({word: i+2 for i, (word, count)
+                             in enumerate(words_counter.most_common(self.opt.max_vocab))})
+            idx2word = {idx: word for word, idx in word2idx.items()}
+
+        return word2idx, idx2word
